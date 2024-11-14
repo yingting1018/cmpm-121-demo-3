@@ -20,9 +20,17 @@ interface Coordinates {
   lat: number;
   lng: number;
 }
+interface GridCoordinates {
+  i: number;
+  j: number;
+}
+interface Coin {
+  id: string;
+  cacheLocation: GridCoordinates;
+}
 interface Cache {
-  location: Coordinates;
-  coins: number;
+  location: GridCoordinates;
+  coins: Coin[];
 }
 
 class Game {
@@ -31,7 +39,7 @@ class Game {
   gridSize: number = 0.0001;
   cacheProbability: number = 0.1;
   map: L.Map;
-  playerPoints: number = 0; // Track player points
+  playerPoints: number = 0;
 
   constructor() {
     this.playerLocation = { lat: 36.9895, lng: -122.0628 };
@@ -45,6 +53,11 @@ class Game {
     this.initializeCaches();
     this.renderMap();
   }
+  convertToGridCoordinates({ lat, lng }: Coordinates): GridCoordinates {
+    const i = Math.floor(lat / this.gridSize);
+    const j = Math.floor(lng / this.gridSize);
+    return { i, j };
+  }
 
   initializeCaches() {
     const maxDistance = 8;
@@ -55,15 +68,20 @@ class Game {
             lat: this.playerLocation.lat + dx * this.gridSize,
             lng: this.playerLocation.lng + dy * this.gridSize,
           };
-          const coins = this.generateCoins();
-          this.caches.push({ location: cacheLocation, coins });
+          const gridCoords = this.convertToGridCoordinates(cacheLocation);
+          const coins = this.generateCoins(gridCoords);
+          this.caches.push({ location: gridCoords, coins });
         }
       }
     }
   }
 
-  generateCoins(): number {
-    return Math.floor(Math.random() * 10) + 1;
+  generateCoins(cacheLocation: GridCoordinates): Coin[] {
+    const numberOfCoins = Math.floor(Math.random() * 10) + 1;
+    return Array.from({ length: numberOfCoins }, (_, serial) => ({
+      id: `${cacheLocation.i}:${cacheLocation.j}#${serial}`,
+      cacheLocation,
+    }));
   }
 
   renderMap() {
@@ -75,7 +93,6 @@ class Game {
       this.map.removeLayer(layer);
     });
 
-    // Add player marker
     L.marker([this.playerLocation.lat, this.playerLocation.lng])
       .addTo(this.map)
       .bindPopup(
@@ -83,62 +100,74 @@ class Game {
       )
       .openPopup();
 
-    // Add cache markers with popups
-    this.caches.forEach((cache, index) => {
-      const marker = L.marker([cache.location.lat, cache.location.lng]).addTo(
-        this.map,
+    this.caches.forEach((cache, cacheIndex) => {
+      const cacheLat = (cache.location.i * this.gridSize).toFixed(6);
+      const cacheLng = (cache.location.j * this.gridSize).toFixed(6);
+      const coinList = cache.coins.map((coin) => `<li>${coin.id}</li>`).join(
+        "<br>",
       );
+      const marker = L.marker([
+        cache.location.i * this.gridSize,
+        cache.location.j * this.gridSize,
+      ]).addTo(this.map);
       marker.bindPopup(`
             <div>
-                <h3>Cache #${index + 1}</h3>
-                <p>Coins: <span id="coins">${cache.coins}</span></p>
-                <button class="collect-btn" data-index="${index}">Collect</button>
-                <button class="deposit-btn" data-index="${index}">Deposit</button>
+                <h3>Cache ${cacheLat}:${cacheLng}</h3>
+                <p>Coins:<ul>${coinList}</ul></p>
+                <button class="collect-btn" data-index="${cacheIndex}">Collect</button>
+                <button class="deposit-btn" data-index="${cacheIndex}">Deposit</button>
             </div>
         `).on("popupopen", () => {
-        // Add event listeners when the popup opens
         const collectBtn = document.querySelector(
-          `.collect-btn[data-index="${index}"]`,
+          `.collect-btn[data-index="${cacheIndex}"]`,
         ) as HTMLButtonElement;
         const depositBtn = document.querySelector(
-          `.deposit-btn[data-index="${index}"]`,
+          `.deposit-btn[data-index="${cacheIndex}"]`,
         ) as HTMLButtonElement;
 
         if (collectBtn) {
-          collectBtn.addEventListener("click", () => this.collectCoins(index));
+          collectBtn.addEventListener(
+            "click",
+            () => this.collectCoins(cacheIndex),
+          );
         }
         if (depositBtn) {
-          depositBtn.addEventListener("click", () => this.depositCoins(index));
+          depositBtn.addEventListener(
+            "click",
+            () => this.depositCoins(cacheIndex),
+          );
         }
       });
     });
 
-    // Update player points display
     const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
     statusPanel.innerHTML = `Points: ${this.playerPoints}`;
   }
 
   collectCoins(cacheIndex: number) {
     const cache = this.caches[cacheIndex];
-    if (cache.coins > 0) {
-      // Collect coins from the cache
-      const collectedCoins = cache.coins;
+    if (cache.coins.length > 0) {
+      const collectedCoins = cache.coins.length;
       alert(`Collected ${collectedCoins} coins from cache #${cacheIndex + 1}.`);
-      this.playerPoints += collectedCoins; // Add to player points
-      cache.coins = 0; // Empty the cache
-      this.renderMap(); // Re-render the map to update the UI
+      this.playerPoints += collectedCoins;
+      cache.coins = [];
+      this.renderMap();
     }
   }
 
   depositCoins(cacheIndex: number) {
     const cache = this.caches[cacheIndex];
     const coinsToDeposit = 5;
-    cache.coins += coinsToDeposit; // Add coins to the cache
+    for (let i = 0; i < coinsToDeposit; i++) {
+      cache.coins.push({
+        id: `${cache.location.i}_${cache.location.j}_${cache.coins.length}`,
+        cacheLocation: cache.location,
+      });
+    }
     alert(`Deposited ${coinsToDeposit} coins to cache #${cacheIndex + 1}.`);
-    this.renderMap(); // Re-render the map to update the UI
+    this.renderMap();
   }
 }
 
-// Initialize and assign the game instance to globalThis
 const game = new Game();
 (globalThis as typeof globalThis & { game: Game }).game = game;
