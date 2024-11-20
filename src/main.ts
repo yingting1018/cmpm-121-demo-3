@@ -24,6 +24,14 @@ movement.innerHTML = `
   <button id="move-right">➡️</button>
 `;
 app.appendChild(movement);
+const geoLocation = document.createElement("button");
+geoLocation.id = "geo-location";
+geoLocation.textContent = "🌐";
+app.appendChild(geoLocation);
+const resetButton = document.createElement("button");
+resetButton.id = "reset-game";
+resetButton.textContent = "🚮";
+app.appendChild(resetButton);
 
 interface Coordinates {
   lat: number;
@@ -68,13 +76,27 @@ class Game {
   playerPoints: number = 0;
   maxCacheDistance: number = 5;
   collectedCoins: Coin[] = [];
+  geoId: number | null = null;
+  movementHistory: Coordinates[] = [];
+  movementPolyline: L.Polyline | null = null;
 
   constructor() {
+    this.loadGame();
     this.playerLocation = { lat: 36.9895, lng: -122.0628 };
-    this.map = L.map("map").setView([
-      this.playerLocation.lat,
-      this.playerLocation.lng,
-    ], 18);
+    if (!this.map) {
+      const mapElement = document.querySelector<HTMLDivElement>("#map");
+      if (mapElement) {
+        this.map = L.map(mapElement).setView([
+          this.playerLocation.lat,
+          this.playerLocation.lng,
+        ], 18);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 20,
+        }).addTo(this.map);
+      }
+    } else {
+      this.map.setView([this.playerLocation.lat, this.playerLocation.lng], 18);
+    }
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 20,
     }).addTo(this.map);
@@ -82,6 +104,8 @@ class Game {
     this.renderMap();
     this.setupMovementControls();
     this.renderInventory();
+    this.setupGeoLocation();
+    this.movementPolyline = L.polyline([], { color: "blue" }).addTo(this.map);
   }
 
   convertToGridCoordinates({ lat, lng }: Coordinates): GridCoordinates {
@@ -196,12 +220,22 @@ class Game {
     };
 
     Object.keys(directions).forEach((buttonId) => {
-      const button = document.querySelector(`#${buttonId}`)!;
-      const direction = directions[buttonId as keyof typeof directions];
-      button.addEventListener("click", () => this.movePlayer(direction));
+      const button = document.querySelector(`#${buttonId}`);
+      if (button) {
+        console.log(`Button ${buttonId} found!`);
+        const direction = directions[buttonId as keyof typeof directions];
+        button.addEventListener("click", () => {
+          console.log(`Button ${buttonId} clicked, moving player ${direction}`);
+          this.movePlayer(direction);
+        });
+      } else {
+        console.warn(`Button ${buttonId} not found`);
+      }
     });
   }
+
   movePlayer(direction: "up" | "down" | "left" | "right") {
+    const previousLocation = { ...this.playerLocation };
     switch (direction) {
       case "up":
         this.playerLocation.lat += this.gridSize;
@@ -216,9 +250,16 @@ class Game {
         this.playerLocation.lng += this.gridSize;
         break;
     }
+    this.movementHistory.push(previousLocation);
+    if (this.movementPolyline) {
+      this.movementPolyline.setLatLngs(
+        this.movementHistory.map((coord) => [coord.lat, coord.lng]),
+      );
+    }
     this.initializeCaches();
     this.map.setView([this.playerLocation.lat, this.playerLocation.lng]);
     this.renderMap();
+    this.triggerAutoSave();
   }
   renderInventory() {
     let inventory = document.querySelector<HTMLDivElement>("#inventory");
@@ -233,15 +274,38 @@ class Game {
     }
     const coinList = document.querySelector<HTMLUListElement>("#coin-list")!;
     coinList.innerHTML = this.collectedCoins
-      .map((coin) => `<li>${coin.id}</li>`)
+      .map((coin) => `
+        <li class="coin-item" data-cache-i="${coin.cacheLocation.i}" data-cache-j="${coin.cacheLocation.j}">
+          ${coin.id}
+        </li>
+      `)
       .join("");
+    document.querySelectorAll<HTMLLIElement>(".coin-item").forEach(
+      (coinItem) => {
+        coinItem.addEventListener("click", (event) => {
+          const target = event.currentTarget as HTMLLIElement;
+          const cacheI = parseInt(target.dataset.cacheI!, 10);
+          const cacheJ = parseInt(target.dataset.cacheJ!, 10);
+          const cacheLat = cacheI * this.gridSize;
+          const cacheLng = cacheJ * this.gridSize;
+          this.map.setView([cacheLat, cacheLng], 18);
+          alert(
+            `Centered map on cache at (${cacheLat.toFixed(6)}, ${
+              cacheLng.toFixed(6)
+            })`,
+          );
+        });
+      },
+    );
   }
+
   collectCoin(cacheId: string, coinId: string) {
     const cache = this.caches.find((cache) => cache.id === cacheId);
     if (!cache) {
-      alert("Cache no longer exists.");
+      alert(`Cache with ID ${cacheId} not found.`);
       return;
     }
+
     const coinIndex = cache.coins.findIndex((coin) => coin.id === coinId);
     if (coinIndex !== -1) {
       const collectedCoin = cache.coins.splice(coinIndex, 1)[0];
@@ -252,13 +316,17 @@ class Game {
       this.cacheStates.set(cacheId, momento);
       this.renderInventory();
       this.renderMap();
-    } else {
-      alert("Coin not found in cache.");
+      this.triggerAutoSave();
     }
   }
 
   depositCoins(cacheIndex: number) {
     const cache = this.caches[cacheIndex];
+    if (!cache) {
+      alert(`Cache with index ${cacheIndex} not found.`);
+      return;
+    }
+
     const coinsToDeposit = Math.min(this.collectedCoins.length, 5);
     const coinsBeingDeposited = this.collectedCoins.splice(0, coinsToDeposit);
     coinsBeingDeposited.forEach((coin) => {
@@ -272,7 +340,124 @@ class Game {
     this.cacheStates.set(cache.id, momento);
     this.renderInventory();
     this.renderMap();
+    this.triggerAutoSave();
+  }
+
+  setupGeoLocation() {
+    const geoToggle = document.querySelector<HTMLButtonElement>(
+      "#geo-location",
+    )!;
+    geoToggle.addEventListener("click", () => {
+      if (this.geoId === null) {
+        this.enableGeolocation();
+      }
+    });
+  }
+  enableGeolocation() {
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
+    }
+    this.geoId = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        this.playerLocation.lat = latitude;
+        this.playerLocation.lng = longitude;
+        this.initializeCaches();
+        this.map.setView([latitude, longitude]);
+        this.renderMap();
+        this.triggerAutoSave();
+      },
+      (error) => {
+        alert(`Geolocation error: ${error.message}`);
+      },
+      { enableHighAccuracy: true },
+    );
+  }
+  saveGame() {
+    const gameState = {
+      playerLocation: this.playerLocation,
+      cacheStates: Array.from(this.cacheStates.entries()),
+      playerPoints: this.playerPoints,
+      collectedCoins: this.collectedCoins,
+    };
+    localStorage.setItem("geocoin-carrier-save", JSON.stringify(gameState));
+  }
+  loadGame() {
+    const savedState = localStorage.getItem("geocoin-carrier-save");
+    if (!savedState) {
+      console.warn("No saved game found.");
+      return;
+    }
+    const gameState = JSON.parse(savedState);
+
+    if (!this.map) {
+      const mapElement = document.querySelector<HTMLDivElement>("#map");
+      if (mapElement) {
+        this.map = L.map(mapElement).setView([
+          gameState.playerLocation.lat,
+          gameState.playerLocation.lng,
+        ], 18);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 20,
+        }).addTo(this.map);
+      }
+    }
+    if (
+      gameState.playerLocation &&
+      typeof gameState.playerLocation.lat === "number" &&
+      typeof gameState.playerLocation.lng === "number" &&
+      Array.isArray(gameState.cacheStates) &&
+      gameState.cacheStates.every(([key, value]: [string, string]) =>
+        typeof key === "string" && typeof value === "string"
+      ) &&
+      Array.isArray(gameState.collectedCoins)
+    ) {
+      this.playerLocation = gameState.playerLocation;
+      this.cacheStates = new Map(gameState.cacheStates);
+      this.playerPoints = gameState.playerPoints || 0;
+      this.collectedCoins = gameState.collectedCoins || [];
+      this.initializeCaches();
+      this.map.setView([this.playerLocation.lat, this.playerLocation.lng]);
+      this.renderMap();
+      this.renderInventory();
+    }
+  }
+  triggerAutoSave() {
+    this.saveGame();
+  }
+  resetGame() {
+    this.playerLocation = { lat: 36.9895, lng: -122.0628 };
+    this.cacheStates.clear();
+    this.initializeCaches();
+    this.collectedCoins = [];
+    this.playerPoints = 0;
+    this.movementHistory = [];
+    if (this.movementPolyline) {
+      this.movementPolyline.setLatLngs([]);
+    }
+    if (this.geoId !== null) {
+      navigator.geolocation.clearWatch(this.geoId);
+      this.geoId = null;
+    }
+    this.renderInventory();
+    this.renderMap();
+    this.map.setView([this.playerLocation.lat, this.playerLocation.lng], 18);
+    localStorage.removeItem("geocoin-carrier-save");
+    alert("Game has been reset!");
   }
 }
-const game = new Game();
-(globalThis as typeof globalThis & { game: Game }).game = game;
+document.addEventListener("DOMContentLoaded", () => {
+  resetButton.addEventListener("click", () => {
+    const confirmation = prompt(
+      "Are you sure you want to erase your game state? Type 'YES' to confirm.",
+    );
+    if (confirmation === "Yes") {
+      game.resetGame();
+    } else {
+      alert("Reset canceled.");
+    }
+  });
+  const game = new Game();
+  (globalThis as typeof globalThis & { game: Game }).game = game;
+});
