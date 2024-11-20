@@ -450,7 +450,7 @@ class Game {
 document.addEventListener("DOMContentLoaded", () => {
   resetButton.addEventListener("click", () => {
     const confirmation = prompt(
-      "Are you sure you want to erase your game state? Type 'YES' to confirm.",
+      "Are you sure you want to erase your game state? Type 'Yes' to confirm.",
     );
     if (confirmation === "Yes") {
       game.resetGame();
